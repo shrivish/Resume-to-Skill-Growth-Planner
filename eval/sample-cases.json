@@ -1,0 +1,51 @@
+[
+  {
+    "name": "frontend-testing-gap",
+    "targetRole": "Frontend Engineer",
+    "timelineWeeks": 12,
+    "targetStack": ["React", "TypeScript"],
+    "resumeText": "Asha Patel\nSoftware Engineer\nSkills: React, TypeScript, JavaScript, Git, PostgreSQL\nExperience: 1.5 years of experience building dashboards and internal tools\nProjects: Analytics Dashboard with React and REST APIs\nEducation: Computer Science",
+    "jobDescriptions": [
+      {
+        "id": "jd-1",
+        "rawText": "Role: Frontend Engineer. Required: React, TypeScript, JavaScript, REST. Preferred: Testing Library, Jest. Build accessible UI features and collaborate with product designers."
+      }
+    ],
+    "expect": {
+      "acceptedJdCount": 1,
+      "gapIncludes": ["Testing Library"],
+      "roadmapWeeks": 12,
+      "projectCount": 3
+    }
+  },
+  {
+    "name": "reject-unrelated-backend-jd",
+    "targetRole": "Frontend Engineer",
+    "timelineWeeks": 8,
+    "targetStack": [],
+    "resumeText": "Rohan Mehta\nFrontend Developer\nSkills: React, JavaScript, CSS, Git\nExperience: 1 year of experience building responsive UI features\nProjects: Portfolio website and component library\nEducation: Computer Science",
+    "jobDescriptions": [
+      {
+        "id": "jd-1",
+        "rawText": "Role: Backend Engineer. Required: Java, Spring Boot, Kafka, PostgreSQL, distributed systems. Build APIs and own service reliability."
+      }
+    ],
+    "expect": {
+      "jdShouldFail": true
+    }
+  },
+  {
+    "name": "no-jd-target-stack-fallback",
+    "targetRole": "Backend Engineer",
+    "timelineWeeks": 8,
+    "targetStack": ["Node.js", "PostgreSQL", "Docker"],
+    "resumeText": "Mira Shah\nJunior Software Engineer\nSkills: JavaScript, React, Git\nExperience: 2 years of experience building web applications\nProjects: Task tracker and expense manager\nEducation: Information Technology",
+    "jobDescriptions": [],
+    "expect": {
+      "acceptedJdCount": 0,
+      "gapIncludes": ["Node.js", "PostgreSQL", "Docker"],
+      "roadmapWeeks": 8,
+      "projectCount": 3
+    }
+  }
+]
