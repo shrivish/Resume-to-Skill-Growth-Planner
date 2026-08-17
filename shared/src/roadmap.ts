@@ -13,6 +13,7 @@ export type RoadmapMilestone = {
   focus: string;
   tasks: string[];
   linkedSkills: string[];
+  notes?: string;
   resources: LearningResource[];
 };
 

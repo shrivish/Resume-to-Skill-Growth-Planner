@@ -35,6 +35,9 @@ export const initializeDatabase = async () => {
         last_updated_at TIMESTAMPTZ NOT NULL
       );
 
+      ALTER TABLE planner_runs
+        ADD COLUMN IF NOT EXISTS learning_resource_result JSONB;
+
       CREATE TABLE IF NOT EXISTS planner_drafts (
         id TEXT PRIMARY KEY,
         target_role TEXT NOT NULL DEFAULT '',
@@ -46,6 +49,12 @@ export const initializeDatabase = async () => {
         last_active_step TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL,
         last_updated_at TIMESTAMPTZ NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS plan_input_contexts (
+        id TEXT PRIMARY KEY,
+        plan_input_context JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL
       );
     `);
   } finally {

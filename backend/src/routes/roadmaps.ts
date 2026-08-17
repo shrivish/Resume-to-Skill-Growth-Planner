@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { RoadmapRequest, TimelineWeeks } from "@rsgp/shared";
 import { generateRoadmap, isSupportedTimeline } from "../services/roadmapGenerator.js";
+import { createLlmProvider } from "../services/llmProvider.js";
 import { logEstimatedTokenUsage } from "../services/tokenUsage.js";
 
 const router = Router();
@@ -37,10 +38,12 @@ const validateRoadmapRequest = (body: unknown): RoadmapRequest => {
   };
 };
 
-router.post("/generate", (request, response, next) => {
+router.post("/generate", async (request, response, next) => {
   try {
     const roadmapRequest = validateRoadmapRequest(request.body);
-    const roadmap = generateRoadmap(roadmapRequest);
+    const roadmap = await generateRoadmap(roadmapRequest, {
+      llmProvider: createLlmProvider()
+    });
 
     logEstimatedTokenUsage({
       route: "POST /roadmaps/generate",

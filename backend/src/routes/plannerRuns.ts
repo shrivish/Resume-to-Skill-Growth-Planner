@@ -12,6 +12,7 @@ import {
 } from "../services/plannerDraftRepository.js";
 import {
   createPlannerRun,
+  deletePlannerRun,
   getPlannerRun,
   listPlannerRuns,
   updatePlannerRunCompletion
@@ -186,6 +187,21 @@ router.post("/", async (request, response, next) => {
     const plannerRun = await createPlannerRun(validateCreateRequest(request.body));
 
     response.status(201).json(plannerRun);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/:id", async (request, response, next) => {
+  try {
+    const deleted = await deletePlannerRun(request.params.id);
+
+    if (!deleted) {
+      response.status(404).json({ error: "Planner run not found." });
+      return;
+    }
+
+    response.status(204).send();
   } catch (error) {
     next(error);
   }

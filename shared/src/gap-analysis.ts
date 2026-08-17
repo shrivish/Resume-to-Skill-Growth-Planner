@@ -1,10 +1,15 @@
 import type { EvidenceSource, GapSeverity, SignalLabel } from "./common.js";
+import type { PlanInputContext } from "./input-context.js";
 import type { ParsedJobDescription } from "./job-description.js";
 import type { SkillCategory } from "./resume.js";
 import type { ParsedResume } from "./resume.js";
 
 export type SkillLevel =
-  "Not shown" | "Beginner" | "Working knowledge" | "Project-ready" | "Interview-ready" | "Strong";
+  | "Not shown"
+  | "Partial exposure"
+  | "Working proficiency"
+  | "Interview-ready"
+  | "Production-ready";
 
 export type GapAnalysisItem = {
   skillName: string;
@@ -24,8 +29,9 @@ export type GapAnalysisOutput = {
 };
 
 export type GapAnalysisRequest = {
-  parsedResume: ParsedResume;
-  targetRole: string;
+  planInputContext?: PlanInputContext;
+  parsedResume?: ParsedResume;
+  targetRole?: string;
   targetStack?: string[];
   acceptedJobDescriptions?: ParsedJobDescription[];
 };

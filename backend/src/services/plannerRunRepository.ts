@@ -17,6 +17,7 @@ type PlannerRunRow = {
   jd_result: SavedPlannerRun["jdResult"];
   gap_result: SavedPlannerRun["gapResult"];
   roadmap_result: SavedPlannerRun["roadmapResult"];
+  learning_resource_result: SavedPlannerRun["learningResourceResult"];
   project_result: SavedPlannerRun["projectResult"];
   created_at: Date;
   last_updated_at: Date;
@@ -36,6 +37,7 @@ const toPlannerRun = (row: PlannerRunRow): SavedPlannerRun => ({
   jdResult: row.jd_result,
   gapResult: row.gap_result,
   roadmapResult: row.roadmap_result,
+  learningResourceResult: row.learning_resource_result,
   projectResult: row.project_result
 });
 
@@ -58,6 +60,12 @@ export const getPlannerRun = async (id: string): Promise<SavedPlannerRun | null>
   return row ? toPlannerRun(row) : null;
 };
 
+export const deletePlannerRun = async (id: string): Promise<boolean> => {
+  const result = await getPool().query("DELETE FROM planner_runs WHERE id = $1", [id]);
+
+  return (result.rowCount ?? 0) > 0;
+};
+
 export const createPlannerRun = async (
   input: CreatePlannerRunRequest
 ): Promise<SavedPlannerRun> => {
@@ -77,11 +85,12 @@ export const createPlannerRun = async (
       jd_result,
       gap_result,
       roadmap_result,
+      learning_resource_result,
       project_result,
       created_at,
       last_updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
     RETURNING *`,
     [
       id,
@@ -95,6 +104,7 @@ export const createPlannerRun = async (
       JSON.stringify(input.jdResult),
       JSON.stringify(input.gapResult),
       JSON.stringify(input.roadmapResult),
+      input.learningResourceResult ? JSON.stringify(input.learningResourceResult) : null,
       JSON.stringify(input.projectResult),
       now
     ]

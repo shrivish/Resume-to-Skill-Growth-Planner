@@ -1,18 +1,18 @@
 import { Router } from "express";
-import type { ProjectRecommendationRequest, TimelineWeeks } from "@rsgp/shared";
-import { recommendProjects } from "../services/projectRecommendationEngine.js";
+import type { LearningResourceRequest, TimelineWeeks } from "@rsgp/shared";
+import { recommendLearningResources } from "../services/learningResourceEngine.js";
 import { createLlmProvider } from "../services/llmProvider.js";
 import { isSupportedTimeline } from "../services/roadmapGenerator.js";
 import { logEstimatedTokenUsage } from "../services/tokenUsage.js";
 
 const router = Router();
 
-const validateProjectRequest = (body: unknown): ProjectRecommendationRequest => {
+const validateLearningResourceRequest = (body: unknown): LearningResourceRequest => {
   if (typeof body !== "object" || body === null) {
     throw new Error("Request body is required.");
   }
 
-  const candidate = body as Partial<ProjectRecommendationRequest>;
+  const candidate = body as Partial<LearningResourceRequest>;
 
   if (typeof candidate.targetRole !== "string" || candidate.targetRole.trim().length < 2) {
     throw new Error("targetRole is required.");
@@ -37,6 +37,9 @@ const validateProjectRequest = (body: unknown): ProjectRecommendationRequest => 
     roadmapMilestones: Array.isArray(candidate.roadmapMilestones)
       ? candidate.roadmapMilestones
       : [],
+    projectRecommendations: Array.isArray(candidate.projectRecommendations)
+      ? candidate.projectRecommendations
+      : [],
     jobDescriptionCount:
       typeof candidate.jobDescriptionCount === "number" ? candidate.jobDescriptionCount : 0
   };
@@ -44,20 +47,20 @@ const validateProjectRequest = (body: unknown): ProjectRecommendationRequest => 
 
 router.post("/recommend", async (request, response, next) => {
   try {
-    const projectRequest = validateProjectRequest(request.body);
-    const projectRecommendations = await recommendProjects(projectRequest, {
+    const learningResourceRequest = validateLearningResourceRequest(request.body);
+    const learningResources = await recommendLearningResources(learningResourceRequest, {
       llmProvider: createLlmProvider()
     });
 
     logEstimatedTokenUsage({
-      route: "POST /projects/recommend",
-      input: projectRequest,
-      output: projectRecommendations
+      route: "POST /learning-resources/recommend",
+      input: learningResourceRequest,
+      output: learningResources
     });
-    response.json(projectRecommendations);
+    response.json(learningResources);
   } catch (error) {
     next(error);
   }
 });
 
-export const projectRouter = router;
+export const learningResourceRouter = router;

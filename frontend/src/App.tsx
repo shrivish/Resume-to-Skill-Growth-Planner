@@ -6,6 +6,11 @@ import {
   type CreatePlannerRunRequest,
   type GapAnalysisOutput,
   type JobDescriptionAnalysisResponse,
+  type JobDescriptionInputEnvelope,
+  type LearningResource,
+  type LearningResourceOutput,
+  type LearningResourceRecommendation,
+  type PlanInputContextResponse,
   type ProjectRecommendation,
   type ProjectRecommendationOutput,
   type ResumeParseResponse,
@@ -37,8 +42,8 @@ const starterJobDescription = `Role: Frontend Engineer. Required: React, TypeScr
 
 type Page = "home" | "create" | "saved";
 type BuilderStep = "inputs" | "gap" | "roadmap";
-type WorkspaceTab = "overview" | "skill-gap" | "roadmap" | "projects";
-type GenerationStage = "idle" | "resume" | "jd" | "gap" | "roadmap" | "projects";
+type WorkspaceTab = "overview" | "skill-gap" | "roadmap" | "projects" | "resources";
+type GenerationStage = "idle" | "resume" | "jd" | "gap" | "roadmap" | "projects" | "resources";
 type SavedPlan = SavedPlannerRun;
 
 type GeneratedDraft = {
@@ -46,6 +51,7 @@ type GeneratedDraft = {
   jdResult: JobDescriptionAnalysisResponse;
   gapResult: GapAnalysisOutput;
   roadmapResult: RoadmapOutput;
+  learningResourceResult: LearningResourceOutput;
   projectResult: ProjectRecommendationOutput;
 };
 
@@ -60,6 +66,71 @@ const splitStack = (value: string) =>
         .filter(Boolean)
     )
   );
+
+const projectResources = (project: ProjectRecommendation) => project.resources ?? [];
+
+const roadmapResourceType = (
+  type: LearningResourceRecommendation["type"]
+): LearningResource["type"] => {
+  if (type === "official-docs") {
+    return "docs";
+  }
+
+  return type;
+};
+
+const attachLearningResourcesToRoadmap = (
+  roadmapResult: RoadmapOutput,
+  learningResourceResult: LearningResourceOutput
+): RoadmapOutput => {
+  const recommendationBySkill = new Map(
+    learningResourceResult.recommendations.map((recommendation) => [
+      recommendation.skillName.toLowerCase(),
+      recommendation
+    ])
+  );
+
+  return {
+    ...roadmapResult,
+    milestones: roadmapResult.milestones.map((milestone) => {
+      const resourcesByUrl = new Map<string, LearningResource>();
+
+      for (const skill of milestone.linkedSkills) {
+        const skillRecommendation = recommendationBySkill.get(skill.toLowerCase());
+
+        if (!skillRecommendation) {
+          continue;
+        }
+
+        for (const resource of skillRecommendation.resources) {
+          resourcesByUrl.set(resource.url, {
+            type: roadmapResourceType(resource.type),
+            label: `${resource.provider}: ${resource.title}`,
+            url: resource.url,
+            relatedSkills: [resource.skillSupported]
+          });
+        }
+      }
+
+      return {
+        ...milestone,
+        resources: Array.from(resourcesByUrl.values()).slice(0, 3)
+      };
+    })
+  };
+};
+
+const flattenDocumentWarnings = (
+  envelopes: Array<
+    | Pick<JobDescriptionInputEnvelope, "warnings">
+    | PlanInputContextResponse["planInputContext"]["resume"]
+  >
+) =>
+  envelopes.flatMap((envelope) => [
+    ...envelope.warnings.extractionWarnings,
+    ...envelope.warnings.parsingWarnings,
+    ...envelope.warnings.validationWarnings
+  ]);
 
 const readSavedPlans = (): SavedPlan[] => {
   try {
@@ -103,6 +174,7 @@ const getJson = async <T,>(path: string): Promise<T> => {
 };
 
 const requestJson = async <T,>(path: string, body: unknown, method = "POST"): Promise<T> => {
+  //helper function to make a JSON request to the API. It takes a path, a body, and an optional method (defaulting to POST). It sends the request and returns the parsed JSON response as type T. If the response is not OK, it throws an error with the message from the payload or a default message.
   const response = await fetch(`${apiUrl}${path}`, {
     method,
     headers: {
@@ -171,23 +243,41 @@ const buildProjectBriefMarkdown = (project: ProjectRecommendation) =>
     `Difficulty: ${project.difficulty}`,
     `Estimated duration: ${project.estimatedDurationWeeks} weeks`,
     "",
+    "## Description",
+    "",
+    project.description ?? "Build a scoped project that demonstrates the covered skills.",
+    "",
     "## Why It Fits",
     "",
     project.whyRecommended,
     "",
     "## What It Should Prove",
     "",
-    `You can apply ${project.coveredSkills.join(", ")} in a practical build.`,
+    project.whatItProves,
+    "",
+    "## How To Build It",
+    "",
+    ...(project.buildSteps ?? []).map((step, index) => `${index + 1}. ${step}`),
     "",
     "## Covered Skills",
     "",
     ...project.coveredSkills.map((skill) => `- ${skill}`),
     "",
-    "## Resources",
-    "",
-    ...project.resources.map(
-      (resource) => `- ${resource.label}${resource.url ? `: ${resource.url}` : ""}`
-    )
+    ...(project.scopeHints && project.scopeHints.length > 0
+      ? ["## Scope Hints", "", ...project.scopeHints.map((hint) => `- ${hint}`), ""]
+      : []),
+    ...(project.starterIdeas && project.starterIdeas.length > 0
+      ? ["## Starter Ideas", "", ...project.starterIdeas.map((idea) => `- ${idea}`), ""]
+      : []),
+    ...(projectResources(project).length > 0
+      ? [
+          "## Resources",
+          "",
+          ...projectResources(project).map(
+            (resource) => `- ${resource.label}${resource.url ? `: ${resource.url}` : ""}`
+          )
+        ]
+      : [])
   ].join("\n");
 
 function App() {
@@ -212,6 +302,7 @@ function App() {
   const [jobDescriptionTexts, setJobDescriptionTexts] = useState(
     savedDraft?.jobDescriptionTexts ?? [starterJobDescription]
   );
+  const [jobDescriptionFiles, setJobDescriptionFiles] = useState<File[]>([]);
   const [generatedDraft, setGeneratedDraft] = useState<GeneratedDraft | null>(null);
   const [selectedProjectBrief, setSelectedProjectBrief] = useState<ProjectRecommendation | null>(
     null
@@ -313,16 +404,12 @@ function App() {
     setResumeFileName(file?.name ?? "");
   };
 
-  const importJobDescriptionFile = async (file: File | null) => {
+  const importJobDescriptionFile = (file: File | null) => {
     if (!file) {
       return;
     }
 
-    const text = await file.text();
-    setJobDescriptionTexts((current) => {
-      const next = current.filter((description) => description.trim().length > 0);
-      return [...next, text].slice(0, MAX_JOB_DESCRIPTIONS);
-    });
+    setJobDescriptionFiles((current) => [...current, file].slice(0, MAX_JOB_DESCRIPTIONS));
   };
 
   const buildDraftRequest = (lastActiveStep: BuilderStep): SavePlannerDraftRequest => ({
@@ -376,11 +463,11 @@ function App() {
 
     const providedJds = jobDescriptionTexts.filter((description) => description.trim().length > 0);
 
-    if (providedJds.length > MAX_JOB_DESCRIPTIONS) {
+    if (providedJds.length + jobDescriptionFiles.length > MAX_JOB_DESCRIPTIONS) {
       return `Use no more than ${MAX_JOB_DESCRIPTIONS} job descriptions.`;
     }
 
-    if (providedJds.length === 0 && targetStack.length === 0) {
+    if (providedJds.length + jobDescriptionFiles.length === 0 && targetStack.length === 0) {
       return "Add a preferred stack or focus when no job description is provided.";
     }
 
@@ -409,37 +496,67 @@ function App() {
       setGenerationStage("resume");
       const formData = new FormData();
 
+      formData.append("targetRole", targetRole);
+      formData.append("timelineWeeks", String(timelineWeeks));
+      formData.append("targetStack", JSON.stringify(targetStack));
+      formData.append("jobDescriptionTexts", JSON.stringify(providedJobDescriptions));
+
       if (resumeFile) {
         formData.append("resume", resumeFile);
       } else {
         formData.append("resumeText", resumeText);
       }
 
-      const resumeResponse = await fetch(`${apiUrl}/resumes/parse`, {
+      jobDescriptionFiles.forEach((file) => {
+        formData.append("jobDescriptionFiles", file);
+      });
+
+      const inputContextResponse = await fetch(`${apiUrl}/plan-input-contexts`, {
         method: "POST",
         body: formData
       });
-      const parsedResumePayload = await resumeResponse.json();
+      const inputContextPayload = await inputContextResponse.json();
 
-      if (!resumeResponse.ok) {
+      if (!inputContextResponse.ok) {
         throw new Error(
-          parsedResumePayload.error ??
-            parsedResumePayload.warnings?.[0]?.message ??
-            "Resume parsing failed."
+          inputContextPayload.error ??
+            inputContextPayload.warnings?.[0]?.message ??
+            "Input parsing failed."
         );
       }
 
-      const resumeResult = parsedResumePayload as ResumeParseResponse;
-
-      setGenerationStage("jd");
-      const jdResult = await requestJson<JobDescriptionAnalysisResponse>(
-        "/job-descriptions/analyze",
-        {
-          targetRole,
-          targetStack,
-          jobDescriptions: providedJobDescriptions
-        }
-      );
+      const planInputContext = (inputContextPayload as PlanInputContextResponse).planInputContext;
+      const resumeResult: ResumeParseResponse = {
+        metadata: {
+          inputKind: planInputContext.resume.fileMetadata?.inputKind ?? "text",
+          fileName: planInputContext.resume.fileMetadata?.fileName,
+          mimeType: planInputContext.resume.fileMetadata?.mimeType,
+          sizeBytes: planInputContext.resume.fileMetadata?.sizeBytes,
+          characterCount: planInputContext.resume.extractedText.length
+        },
+        parsedResume: planInputContext.resume.parsedResume,
+        extractedTextPreview: planInputContext.resume.extractedText.slice(0, 500),
+        warnings: flattenDocumentWarnings([planInputContext.resume])
+      };
+      const jdEnvelopes = [
+        ...planInputContext.acceptedJobDescriptions,
+        ...planInputContext.rejectedJobDescriptions
+      ];
+      const jdResult: JobDescriptionAnalysisResponse = {
+        targetRole: planInputContext.targetRole,
+        targetStack: planInputContext.targetStack ?? [],
+        acceptedJobDescriptions: planInputContext.acceptedJobDescriptions.map(
+          (envelope) => envelope.parsedJobDescription
+        ),
+        rejectedJobDescriptions: planInputContext.rejectedJobDescriptions.map(
+          (envelope) => envelope.parsedJobDescription
+        ),
+        warnings: [
+          ...flattenDocumentWarnings(jdEnvelopes),
+          ...planInputContext.inputQuality.overallWarnings
+        ],
+        needsTargetStack: planInputContext.inputQuality.needsTargetStack
+      };
 
       if (jdResult.needsTargetStack) {
         throw new Error(
@@ -447,13 +564,10 @@ function App() {
             "Add target stack before continuing."
         );
       }
-
+      //entry point for gap analysis
       setGenerationStage("gap");
       const gapResult = await requestJson<GapAnalysisOutput>("/gap-analysis/generate", {
-        parsedResume: resumeResult.parsedResume,
-        targetRole,
-        targetStack: jdResult.targetStack,
-        acceptedJobDescriptions: jdResult.acceptedJobDescriptions
+        planInputContext
       });
 
       setGenerationStage("roadmap");
@@ -469,14 +583,36 @@ function App() {
       const projectResult = await requestJson<ProjectRecommendationOutput>("/projects/recommend", {
         targetRole,
         targetStack: jdResult.targetStack,
-        gapAnalysisItems: gapResult.items
+        gapAnalysisItems: gapResult.items,
+        timelineWeeks,
+        roadmapMilestones: roadmapResult.milestones,
+        jobDescriptionCount: jdResult.acceptedJobDescriptions.length
       });
+
+      setGenerationStage("resources");
+      const learningResourceResult = await requestJson<LearningResourceOutput>(
+        "/learning-resources/recommend",
+        {
+          targetRole,
+          targetStack: jdResult.targetStack,
+          gapAnalysisItems: gapResult.items,
+          timelineWeeks,
+          roadmapMilestones: roadmapResult.milestones,
+          projectRecommendations: projectResult.recommendations,
+          jobDescriptionCount: jdResult.acceptedJobDescriptions.length
+        }
+      );
+      const roadmapWithResources = attachLearningResourcesToRoadmap(
+        roadmapResult,
+        learningResourceResult
+      );
 
       setGeneratedDraft({
         resumeResult,
         jdResult,
         gapResult,
-        roadmapResult,
+        roadmapResult: roadmapWithResources,
+        learningResourceResult,
         projectResult
       });
       setBuilderStep("gap");
@@ -559,6 +695,40 @@ function App() {
     setPage("saved");
   };
 
+  const deletePlan = async (planId: string) => {
+    const plan = savedPlans.find((item) => item.id === planId);
+
+    if (!plan || !window.confirm(`Delete "${plan.title}"?`)) {
+      return;
+    }
+
+    const removePlanFromState = () => {
+      setSavedPlans((current) => {
+        const remainingPlans = current.filter((item) => item.id !== planId);
+
+        if (activePlanId === planId) {
+          setActivePlanId(remainingPlans[0]?.id ?? "");
+        }
+
+        return remainingPlans;
+      });
+    };
+
+    if (planId.startsWith("local-")) {
+      removePlanFromState();
+      setNotice("Plan deleted.");
+      return;
+    }
+
+    try {
+      await deleteRequest(`/planner-runs/${planId}`);
+      removePlanFromState();
+      setNotice("Plan deleted.");
+    } catch {
+      setNotice("Plan could not be deleted from PostgreSQL.");
+    }
+  };
+
   const toggleTask = async (plan: SavedPlan, taskKey: string) => {
     const updatedPlan: SavedPlan = {
       ...plan,
@@ -619,6 +789,7 @@ function App() {
           generationStage={generationStage}
           importJobDescriptionFile={importJobDescriptionFile}
           isRunning={isRunning}
+          jobDescriptionFiles={jobDescriptionFiles}
           jobDescriptionTexts={jobDescriptionTexts}
           notice={notice}
           openPlan={openPlan}
@@ -648,6 +819,7 @@ function App() {
         <SavedPlansPage
           activePlan={activePlan}
           activeTab={activeTab}
+          deletePlan={deletePlan}
           notice={notice}
           openPlan={openPlan}
           openProjectBrief={setSelectedProjectBrief}
@@ -738,6 +910,7 @@ type CreatePageProps = {
   generationStage: GenerationStage;
   importJobDescriptionFile: (file: File | null) => void;
   isRunning: boolean;
+  jobDescriptionFiles: File[];
   jobDescriptionTexts: string[];
   notice: string;
   openPlan: (planId: string) => void;
@@ -785,6 +958,7 @@ const CreatePage = (props: CreatePageProps) => (
             generationStage={props.generationStage}
             importJobDescriptionFile={props.importJobDescriptionFile}
             isRunning={props.isRunning}
+            jobDescriptionFiles={props.jobDescriptionFiles}
             jobDescriptionTexts={props.jobDescriptionTexts}
             notice={props.notice}
             removeJobDescription={props.removeJobDescription}
@@ -828,6 +1002,7 @@ const CreatePage = (props: CreatePageProps) => (
 const SavedPlansPage = ({
   activePlan,
   activeTab,
+  deletePlan,
   notice,
   openPlan,
   openProjectBrief,
@@ -838,6 +1013,7 @@ const SavedPlansPage = ({
 }: {
   activePlan: SavedPlan | null;
   activeTab: WorkspaceTab;
+  deletePlan: (planId: string) => void;
   notice: string;
   openPlan: (planId: string) => void;
   openProjectBrief: (project: ProjectRecommendation) => void;
@@ -850,6 +1026,7 @@ const SavedPlansPage = ({
     rail={
       <SavedRail
         activePlanId={activePlan?.id ?? ""}
+        deletePlan={deletePlan}
         openPlan={openPlan}
         savedPlans={savedPlans}
         startCreateFlow={startCreateFlow}
@@ -877,6 +1054,7 @@ const InputsStep = ({
   generationStage,
   importJobDescriptionFile,
   isRunning,
+  jobDescriptionFiles,
   jobDescriptionTexts,
   notice,
   removeJobDescription,
@@ -972,14 +1150,19 @@ const InputsStep = ({
           <div className="flex flex-wrap gap-2">
             <FileButton label="Upload JD">
               <input
-                accept=".txt,.md"
+                accept=".pdf,.docx,.txt,.md"
                 className="sr-only"
                 onChange={(event) => void importJobDescriptionFile(event.target.files?.[0] ?? null)}
                 type="file"
               />
             </FileButton>
+            {jobDescriptionFiles.length > 0 ? (
+              <SmallMeta>{jobDescriptionFiles.map((file) => file.name).join(", ")}</SmallMeta>
+            ) : null}
             <SecondaryButton
-              disabled={jobDescriptionTexts.length >= MAX_JOB_DESCRIPTIONS}
+              disabled={
+                jobDescriptionTexts.length + jobDescriptionFiles.length >= MAX_JOB_DESCRIPTIONS
+              }
               onClick={addJobDescription}
             >
               Add JD
@@ -1122,6 +1305,7 @@ const PlanWorkspace = ({
       {activeTab === "projects" ? (
         <ProjectsTab openProjectBrief={openProjectBrief} plan={plan} />
       ) : null}
+      {activeTab === "resources" ? <LearningResourcesTab plan={plan} /> : null}
     </section>
   );
 };
@@ -1168,6 +1352,16 @@ const OverviewTab = ({ plan }: { plan: SavedPlan }) => {
           <p>
             {plan.projectResult.recommendations[0]?.title ?? "Project recommendations are ready."}
           </p>
+          {plan.learningResourceResult ? (
+            <p>
+              Resources ready for{" "}
+              {plan.learningResourceResult.recommendations
+                .slice(0, 2)
+                .map((recommendation) => recommendation.skillName)
+                .join(", ")}
+              .
+            </p>
+          ) : null}
           <StatusBadge>{completionPercent(plan)}% complete</StatusBadge>
         </div>
       </ResultPanel>
@@ -1228,18 +1422,55 @@ const ProjectsTab = ({
           <StatusBadge>{project.type}</StatusBadge>
           <StatusBadge>{project.difficulty}</StatusBadge>
         </div>
-        <p className="mt-3 text-sm leading-6 text-ink/70">{project.whyRecommended}</p>
+        <p className="mt-3 text-sm leading-6 text-ink/70">
+          {project.description ?? project.whyRecommended}
+        </p>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <InfoBlock label="Why it fits" value={project.coveredSkills.join(", ")} />
           <InfoBlock
             label="What it should prove"
-            value={`You can apply ${project.coveredSkills.slice(0, 3).join(", ")} in a ${project.estimatedDurationWeeks}-week build.`}
+            value={
+              project.whatItProves ??
+              `You can apply ${project.coveredSkills.slice(0, 3).join(", ")} in a ${project.estimatedDurationWeeks}-week build.`
+            }
           />
         </div>
+        {project.scopeHints && project.scopeHints.length > 0 ? (
+          <div className="mt-4">
+            <SmallMeta>Scope hints</SmallMeta>
+            <div className="mt-2">
+              <PillList values={project.scopeHints} />
+            </div>
+          </div>
+        ) : null}
+        {project.buildSteps && project.buildSteps.length > 0 ? (
+          <div className="mt-4">
+            <SmallMeta>How to build it</SmallMeta>
+            <ol className="mt-2 grid gap-2 text-sm leading-6 text-ink/70">
+              {project.buildSteps.slice(0, 3).map((step) => (
+                <li className="rounded-md border border-ink/10 bg-white p-3" key={step}>
+                  {step}
+                </li>
+              ))}
+            </ol>
+          </div>
+        ) : null}
         <div className="mt-4 flex flex-wrap gap-2">
-          {project.resources.map((resource) => (
-            <StatusBadge key={`${project.title}-${resource.label}`}>{resource.label}</StatusBadge>
-          ))}
+          {projectResources(project).filter((resource) => resource.url).length > 0
+            ? projectResources(project)
+                .filter((resource) => resource.url)
+                .map((resource) => (
+                  <a
+                    className="rounded-md border border-moss/20 bg-moss/10 px-3 py-1 text-xs font-semibold text-moss transition hover:border-moss/40 hover:bg-moss/15"
+                    href={resource.url}
+                    key={`${project.title}-${resource.label}`}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    {resource.label}
+                  </a>
+                ))
+            : null}
           <SecondaryButton onClick={() => openProjectBrief(project)}>
             Open project brief
           </SecondaryButton>
@@ -1247,6 +1478,85 @@ const ProjectsTab = ({
       </article>
     ))}
   </section>
+);
+
+const LearningResourcesTab = ({ plan }: { plan: SavedPlan }) => {
+  const learningResources = plan.learningResourceResult;
+
+  if (!learningResources || learningResources.recommendations.length === 0) {
+    return (
+      <EmptyState text="No learning resources are saved for this plan yet. Generate a fresh plan to include Section 5 resources." />
+    );
+  }
+
+  return (
+    <section className="grid gap-4">
+      <ResultPanel title="Source policy">
+        <div className="grid gap-2 text-sm leading-6 text-ink/70">
+          <p>{learningResources.sourcePolicy}</p>
+          <p>{learningResources.selectionSummary}</p>
+        </div>
+      </ResultPanel>
+      {learningResources.recommendations.map((skillRecommendation) => (
+        <article
+          className="rounded-lg border border-ink/10 bg-[#fffdf8] p-5 shadow-sm"
+          key={skillRecommendation.skillName}
+        >
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-lg font-semibold">{skillRecommendation.skillName}</h3>
+                <SeverityBadge>{skillRecommendation.gapSeverity}</SeverityBadge>
+                <StatusBadge>{skillRecommendation.currentLevel}</StatusBadge>
+              </div>
+              {skillRecommendation.roadmapWeek ? (
+                <p className="mt-2 text-sm leading-6 text-ink/65">
+                  Week {skillRecommendation.roadmapWeek}: {skillRecommendation.roadmapFocus}
+                </p>
+              ) : null}
+            </div>
+            {skillRecommendation.projectConnections.length > 0 ? (
+              <PillList values={skillRecommendation.projectConnections} />
+            ) : null}
+          </div>
+          <div className="mt-4 grid gap-3">
+            {skillRecommendation.resources.map((resource) => (
+              <LearningResourceCard key={resource.id} resource={resource} />
+            ))}
+          </div>
+        </article>
+      ))}
+      <p className="text-sm leading-6 text-ink/60">{learningResources.generatedFromNote}</p>
+    </section>
+  );
+};
+
+const LearningResourceCard = ({ resource }: { resource: LearningResourceRecommendation }) => (
+  <div className="rounded-md border border-ink/10 bg-white p-4 text-sm leading-6 text-ink/70">
+    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+      <div>
+        <a
+          className="font-semibold text-moss underline-offset-4 hover:underline"
+          href={resource.url}
+          rel="noreferrer"
+          target="_blank"
+        >
+          {resource.title}
+        </a>
+        <p className="mt-1">
+          {resource.provider} · {resource.type} · {resource.depth}
+        </p>
+      </div>
+      <StatusBadge>{resource.sourceFamily}</StatusBadge>
+    </div>
+    <div className="mt-3 grid gap-3 md:grid-cols-2">
+      <InfoBlock label="Why this resource" value={resource.whyRecommended} />
+      <InfoBlock label="Roadmap fit" value={resource.roadmapFit} />
+    </div>
+    {resource.projectFit ? (
+      <p className="mt-3 text-sm leading-6 text-ink/65">{resource.projectFit}</p>
+    ) : null}
+  </div>
 );
 
 const GapCards = ({ output }: { output: GapAnalysisOutput }) => (
@@ -1322,6 +1632,27 @@ const RoadmapBlocks = ({
             );
           })}
         </div>
+        {milestone.resources.filter((resource) => resource.url).length > 0 ? (
+          <div className="mt-4 border-t border-ink/10 pt-4">
+            <SmallMeta>Resources</SmallMeta>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {milestone.resources
+                .filter((resource) => resource.url)
+                .map((resource) => (
+                  <a
+                    className="rounded-md border border-ink/10 bg-white p-3 text-sm font-semibold leading-6 text-moss transition hover:border-moss/40 hover:bg-moss/5"
+                    href={resource.url}
+                    key={`${milestone.week}-${resource.label}`}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    <span className="block text-xs uppercase text-ink/45">{resource.type}</span>
+                    {resource.label}
+                  </a>
+                ))}
+            </div>
+          </div>
+        ) : null}
       </article>
     ))}
   </section>
@@ -1360,10 +1691,19 @@ const ProjectBriefDialog = ({
       </div>
 
       <div className="mt-5 grid gap-4">
+        <InfoBlock
+          label="Description"
+          value={
+            project.description ?? "Build a scoped project that demonstrates the covered skills."
+          }
+        />
         <InfoBlock label="Why it fits" value={project.whyRecommended} />
         <InfoBlock
           label="What it should prove"
-          value={`You can apply ${project.coveredSkills.join(", ")} in a practical build that supports your target role story.`}
+          value={
+            project.whatItProves ??
+            `You can apply ${project.coveredSkills.join(", ")} in a practical build that supports your target role story.`
+          }
         />
         <div>
           <SmallMeta>Covered skills</SmallMeta>
@@ -1371,30 +1711,64 @@ const ProjectBriefDialog = ({
             <PillList values={project.coveredSkills} />
           </div>
         </div>
-        <div>
-          <SmallMeta>Resources</SmallMeta>
-          <div className="mt-2 grid gap-2">
-            {project.resources.map((resource) => (
-              <div
-                className="rounded-md border border-ink/10 bg-white p-3 text-sm leading-6 text-ink/70"
-                key={`${project.title}-${resource.label}`}
-              >
-                <p className="font-semibold text-ink">{resource.label}</p>
-                <p>{resource.relatedSkills.join(", ")}</p>
-                {resource.url ? (
-                  <a
-                    className="font-semibold text-moss"
-                    href={resource.url}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    Open resource
-                  </a>
-                ) : null}
-              </div>
-            ))}
+        {project.buildSteps && project.buildSteps.length > 0 ? (
+          <div>
+            <SmallMeta>How to build it</SmallMeta>
+            <ol className="mt-2 grid gap-2 text-sm leading-6 text-ink/70">
+              {project.buildSteps.map((step, index) => (
+                <li className="rounded-md border border-ink/10 bg-white p-3" key={step}>
+                  {index + 1}. {step}
+                </li>
+              ))}
+            </ol>
           </div>
-        </div>
+        ) : null}
+        {project.scopeHints && project.scopeHints.length > 0 ? (
+          <div>
+            <SmallMeta>Scope hints</SmallMeta>
+            <ul className="mt-2 grid gap-2 text-sm leading-6 text-ink/70">
+              {project.scopeHints.map((hint) => (
+                <li className="rounded-md border border-ink/10 bg-white p-3" key={hint}>
+                  {hint}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {project.starterIdeas && project.starterIdeas.length > 0 ? (
+          <div>
+            <SmallMeta>Starter ideas</SmallMeta>
+            <div className="mt-2">
+              <PillList values={project.starterIdeas} />
+            </div>
+          </div>
+        ) : null}
+        {projectResources(project).length > 0 ? (
+          <div>
+            <SmallMeta>Resources</SmallMeta>
+            <div className="mt-2 grid gap-2">
+              {projectResources(project).map((resource) => (
+                <div
+                  className="rounded-md border border-ink/10 bg-white p-3 text-sm leading-6 text-ink/70"
+                  key={`${project.title}-${resource.label}`}
+                >
+                  <p className="font-semibold text-ink">{resource.label}</p>
+                  <p>{resource.relatedSkills.join(", ")}</p>
+                  {resource.url ? (
+                    <a
+                      className="font-semibold text-moss"
+                      href={resource.url}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      Open resource
+                    </a>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="mt-5 flex flex-wrap justify-end gap-3 border-t border-ink/10 pt-4">
@@ -1451,11 +1825,13 @@ const CreateRail = ({
 
 const SavedRail = ({
   activePlanId,
+  deletePlan,
   openPlan,
   savedPlans,
   startCreateFlow
 }: {
   activePlanId: string;
+  deletePlan: (planId: string) => void;
   openPlan: (planId: string) => void;
   savedPlans: SavedPlan[];
   startCreateFlow: () => void;
@@ -1475,6 +1851,7 @@ const SavedRail = ({
     </button>
     <RailPlanList
       activePlanId={activePlanId}
+      deletePlan={deletePlan}
       openPlan={openPlan}
       plans={savedPlans}
       title="Plans"
@@ -1484,11 +1861,13 @@ const SavedRail = ({
 
 const RailPlanList = ({
   activePlanId,
+  deletePlan,
   openPlan,
   plans,
   title
 }: {
   activePlanId?: string;
+  deletePlan?: (planId: string) => void;
   openPlan: (planId: string) => void;
   plans: SavedPlan[];
   title: string;
@@ -1498,19 +1877,36 @@ const RailPlanList = ({
     <div className="grid gap-2">
       {plans.length > 0 ? (
         plans.map((plan) => (
-          <button
+          <div
             className={`rounded-md border p-3 text-left transition ${
               activePlanId === plan.id
                 ? "border-moss/35 bg-moss/10"
                 : "border-ink/10 bg-white hover:border-moss/30"
             }`}
             key={plan.id}
-            onClick={() => openPlan(plan.id)}
-            type="button"
           >
-            <p className="text-sm font-semibold">{plan.title}</p>
-            <p className="mt-1 text-xs text-ink/55">{timelineLabels[plan.timelineWeeks]}</p>
-          </button>
+            <div className="flex items-start justify-between gap-2">
+              <button
+                className="min-w-0 flex-1 text-left"
+                onClick={() => openPlan(plan.id)}
+                type="button"
+              >
+                <p className="text-sm font-semibold">{plan.title}</p>
+                <p className="mt-1 text-xs text-ink/55">{timelineLabels[plan.timelineWeeks]}</p>
+              </button>
+              {deletePlan ? (
+                <button
+                  aria-label={`Delete ${plan.title}`}
+                  className="shrink-0 rounded border border-transparent px-2 py-1 text-xs font-semibold text-clay transition hover:border-clay/30 hover:bg-clay/10"
+                  onClick={() => deletePlan(plan.id)}
+                  title="Delete plan"
+                  type="button"
+                >
+                  Delete
+                </button>
+              ) : null}
+            </div>
+          </div>
         ))
       ) : (
         <EmptyState text="No saved plans yet." />
@@ -1580,7 +1976,8 @@ const SegmentedTabs = ({
     { id: "overview", label: "Overview" },
     { id: "skill-gap", label: "Skill Gap" },
     { id: "roadmap", label: "Roadmap" },
-    { id: "projects", label: "Projects" }
+    { id: "projects", label: "Projects" },
+    { id: "resources", label: "Resources" }
   ];
 
   return (

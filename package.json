@@ -13,6 +13,7 @@
     "dev": "npm run build -w shared && concurrently \"npm run dev -w backend\" \"npm run dev -w frontend\"",
     "build": "npm run build -w shared && npm run build -w backend && npm run build -w frontend",
     "start": "npm run start -w backend",
+    "test": "npm run test -w backend",
     "evaluate": "node scripts/run-evaluation.mjs",
     "lint": "eslint .",
     "format": "prettier --write .",

@@ -12,6 +12,8 @@ import {
 } from "@rsgp/shared";
 import { gapAnalysisRouter } from "./routes/gapAnalysis.js";
 import { jobDescriptionRouter } from "./routes/jobDescriptions.js";
+import { learningResourceRouter } from "./routes/learningResources.js";
+import { planInputContextRouter } from "./routes/planInputContexts.js";
 import { plannerRunRouter } from "./routes/plannerRuns.js";
 import { projectRouter } from "./routes/projects.js";
 import { resumeRouter } from "./routes/resumes.js";
@@ -23,18 +25,30 @@ dotenv.config();
 
 const app = express();
 const port = Number(process.env.PORT ?? 4000);
-const corsOrigin = process.env.CORS_ORIGIN ?? "http://localhost:5173";
+const corsOrigins = (process.env.CORS_ORIGIN ?? "http://localhost:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 app.use(helmet());
 app.use(
   cors({
-    origin: corsOrigin
+    origin(origin, callback) {
+      if (!origin || corsOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error(`CORS origin not allowed: ${origin}`));
+    }
   })
 );
 app.use(express.json({ limit: "5mb" }));
 
 app.use("/gap-analysis", gapAnalysisRouter);
 app.use("/job-descriptions", jobDescriptionRouter);
+app.use("/learning-resources", learningResourceRouter);
+app.use("/plan-input-contexts", planInputContextRouter);
 app.use("/planner-runs", plannerRunRouter);
 app.use("/projects", projectRouter);
 app.use("/resumes", resumeRouter);
@@ -66,7 +80,11 @@ app.use(
     response: express.Response,
     _next: express.NextFunction
   ) => {
-    if (error instanceof Error && error.message.startsWith("Unsupported resume file type")) {
+    if (
+      error instanceof Error &&
+      (error.message.startsWith("Unsupported resume file type") ||
+        error.message.startsWith("Unsupported document file type"))
+    ) {
       response.status(415).json({ error: error.message });
       return;
     }
@@ -91,6 +109,9 @@ app.use(
         error.message === "lastActiveStep must be inputs, gap, or roadmap." ||
         error.message === "jobDescriptionTexts must be an array when provided." ||
         error.message === "No more than 5 job descriptions can be saved in a draft." ||
+        error.message === "jobDescriptionTexts must be a string or array." ||
+        error.message === "Provide a resume file or pasted resume text." ||
+        error.message.includes("LLM output failed schema validation") ||
         error.message.includes("job descriptions can be provided"))
     ) {
       response.status(400).json({ error: error.message });
@@ -103,6 +124,18 @@ app.use(
     ) {
       response.status(503).json({
         error: "Persistence is unavailable. Check DATABASE_URL and PostgreSQL."
+      });
+      return;
+    }
+
+    if (
+      error instanceof Error &&
+      (error.message.includes("Ollama request failed") ||
+        error.message.includes("fetch failed") ||
+        error.message.includes("Unsupported LLM provider"))
+    ) {
+      response.status(503).json({
+        error: "LLM provider is unavailable. Check LLM_PROVIDER, OLLAMA_BASE_URL, and OLLAMA_MODEL."
       });
       return;
     }

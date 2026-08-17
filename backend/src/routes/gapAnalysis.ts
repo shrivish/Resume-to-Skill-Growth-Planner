@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { GapAnalysisRequest } from "@rsgp/shared";
 import { generateGapAnalysis } from "../services/gapAnalysisEngine.js";
+import { createLlmProvider } from "../services/llmProvider.js";
 import { logEstimatedTokenUsage } from "../services/tokenUsage.js";
 
 const router = Router();
@@ -12,8 +13,14 @@ const validateGapAnalysisRequest = (body: unknown): GapAnalysisRequest => {
 
   const candidate = body as Partial<GapAnalysisRequest>;
 
+  if (candidate.planInputContext) {
+    return {
+      planInputContext: candidate.planInputContext
+    };
+  }
+
   if (!candidate.parsedResume) {
-    throw new Error("parsedResume is required.");
+    throw new Error("parsedResume or planInputContext is required.");
   }
 
   if (typeof candidate.targetRole !== "string" || candidate.targetRole.trim().length < 2) {
@@ -30,10 +37,12 @@ const validateGapAnalysisRequest = (body: unknown): GapAnalysisRequest => {
   };
 };
 
-router.post("/generate", (request, response, next) => {
+router.post("/generate", async (request, response, next) => {
   try {
     const gapAnalysisRequest = validateGapAnalysisRequest(request.body);
-    const gapAnalysis = generateGapAnalysis(gapAnalysisRequest);
+    const gapAnalysis = await generateGapAnalysis(gapAnalysisRequest, {
+      llmProvider: createLlmProvider()
+    });
 
     logEstimatedTokenUsage({
       route: "POST /gap-analysis/generate",

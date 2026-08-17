@@ -1,6 +1,7 @@
 import type { GenerationContext } from "./common.js";
 import type { GapAnalysisOutput } from "./gap-analysis.js";
 import type { JobDescriptionAnalysisResponse, ParsedJobDescription } from "./job-description.js";
+import type { LearningResourceOutput } from "./learning-resource.js";
 import type { ProjectRecommendationOutput } from "./project-recommendation.js";
 import type { ParsedResume, ResumeParseResponse } from "./resume.js";
 import type { RoadmapOutput } from "./roadmap.js";
@@ -13,6 +14,7 @@ export type PlannerRun = {
   parsedJobDescriptions: ParsedJobDescription[];
   gapAnalysis?: GapAnalysisOutput;
   roadmap?: RoadmapOutput;
+  learningResources?: LearningResourceOutput;
   projectRecommendations?: ProjectRecommendationOutput;
   createdAt: string;
   updatedAt: string;
@@ -34,6 +36,7 @@ export type SavedPlannerRun = {
   jdResult: JobDescriptionAnalysisResponse;
   gapResult: GapAnalysisOutput;
   roadmapResult: RoadmapOutput;
+  learningResourceResult?: LearningResourceOutput;
   projectResult: ProjectRecommendationOutput;
 };
 

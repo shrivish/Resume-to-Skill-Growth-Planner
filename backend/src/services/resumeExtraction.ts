@@ -2,7 +2,7 @@ import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
 import type { ResumeInputKind } from "@rsgp/shared";
 
-type ExtractResumeTextInput =
+type ExtractDocumentTextInput =
   | {
       sourceType: "file";
       file: Express.Multer.File;
@@ -40,11 +40,11 @@ const inferInputKind = (file: Express.Multer.File): ResumeInputKind => {
     return "text";
   }
 
-  throw new Error("Unsupported resume file type. Upload a PDF, DOCX, TXT file, or paste text.");
+  throw new Error("Unsupported document file type. Upload a PDF, DOCX, TXT file, or paste text.");
 };
 
-export const extractResumeText = async (
-  input: ExtractResumeTextInput
+export const extractDocumentText = async (
+  input: ExtractDocumentTextInput
 ): Promise<ExtractedResumeText> => {
   if (input.sourceType === "text") {
     return {
@@ -80,3 +80,5 @@ export const extractResumeText = async (
     sizeBytes: input.file.size
   };
 };
+
+export const extractResumeText = extractDocumentText;
