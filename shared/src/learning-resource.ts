@@ -1,7 +1,7 @@
 import type { GapAnalysisItem, SkillLevel } from "./gap-analysis.js";
 import type { ProjectRecommendation } from "./project-recommendation.js";
 import type { RoadmapMilestone } from "./roadmap.js";
-import type { GapSeverity, TimelineWeeks } from "./common.js";
+import type { ContractWarning, GapSeverity, TimelineWeeks } from "./common.js";
 
 export type LearningResourceType = "official-docs" | "course" | "article" | "video" | "github";
 
@@ -40,6 +40,7 @@ export type LearningResourceOutput = {
   sourcePolicy: string;
   selectionSummary: string;
   generatedFromNote: string;
+  warnings?: ContractWarning[];
 };
 
 export type LearningResourceRequest = {

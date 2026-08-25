@@ -19,6 +19,7 @@ import { projectRouter } from "./routes/projects.js";
 import { resumeRouter } from "./routes/resumes.js";
 import { roadmapRouter } from "./routes/roadmaps.js";
 import { initializeDatabase } from "./services/database.js";
+import { AiGenerationError } from "./services/llmProvider.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), "../.env") });
 dotenv.config();
@@ -80,6 +81,31 @@ app.use(
     response: express.Response,
     _next: express.NextFunction
   ) => {
+    if (error instanceof AiGenerationError) {
+      console.error("[ai-generation]", {
+        kind: error.kind,
+        message: error.message,
+        details: error.details
+      });
+
+      if (
+        error.kind === "provider_runtime_failure" ||
+        error.kind === "unsupported_provider"
+      ) {
+        response.status(503).json({
+          error: "AI provider is unavailable. Check LLM_PROVIDER, OLLAMA_BASE_URL, and OLLAMA_MODEL.",
+          failureKind: error.kind
+        });
+        return;
+      }
+
+      response.status(502).json({
+        error: "AI generation failed validation. No invalid plan output was accepted.",
+        failureKind: error.kind
+      });
+      return;
+    }
+
     if (
       error instanceof Error &&
       (error.message.startsWith("Unsupported resume file type") ||
@@ -111,7 +137,6 @@ app.use(
         error.message === "No more than 5 job descriptions can be saved in a draft." ||
         error.message === "jobDescriptionTexts must be a string or array." ||
         error.message === "Provide a resume file or pasted resume text." ||
-        error.message.includes("LLM output failed schema validation") ||
         error.message.includes("job descriptions can be provided"))
     ) {
       response.status(400).json({ error: error.message });

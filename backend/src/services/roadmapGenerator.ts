@@ -1,4 +1,5 @@
 import {
+  type ContractWarning,
   SUPPORTED_TIMELINE_WEEKS,
   type GapAnalysisItem,
   type GapSeverity,
@@ -9,7 +10,13 @@ import {
   type SkillCategory,
   type SkillLevel
 } from "@rsgp/shared";
+import { generateValidatedJson } from "./aiGenerationService.js";
 import type { LlmProvider } from "./llmProvider.js";
+import {
+  assertRoadmapQuality,
+  buildGenerationWarnings
+} from "./outputQualityValidation.js";
+import type { ValidationResult } from "./structuredOutputValidation.js";
 
 type ScoredGap = {
   item: GapAnalysisItem;
@@ -495,20 +502,27 @@ const roadmapPacePhrase = (timelineWeeks: number) => {
 const validateLlmRefinements = (
   value: unknown,
   draftMilestones: RoadmapMilestone[]
-): LlmMilestoneRefinement[] => {
+): ValidationResult<LlmMilestoneRefinement[]> => {
   if (!isRecord(value) || !Array.isArray(value.milestones)) {
-    return [];
+    return {
+      ok: false,
+      errors: ["milestones must be an array."],
+      warnings: []
+    };
   }
 
   const draftByWeek = new Map(draftMilestones.map((milestone) => [milestone.week, milestone]));
+  const errors: string[] = [];
+  const warnings: ContractWarning[] = [];
 
-  return value.milestones
+  const refinements = value.milestones
     .filter(isRecord)
     .map((item): LlmMilestoneRefinement | undefined => {
       const week = typeof item.week === "number" ? item.week : 0;
       const draft = draftByWeek.get(week);
 
       if (!draft) {
+        errors.push(`milestones contains unknown week ${week}.`);
         return undefined;
       }
 
@@ -521,6 +535,7 @@ const validateLlmRefinements = (
         : undefined;
 
       if (tasks && (tasks.length < 2 || tasks.length > 4)) {
+        errors.push(`milestones[week=${week}].tasks must contain 2 to 4 tasks.`);
         return undefined;
       }
 
@@ -538,6 +553,16 @@ const validateLlmRefinements = (
       };
     })
     .filter((item): item is LlmMilestoneRefinement => Boolean(item));
+
+  if (refinements.length === 0) {
+    errors.push("milestones did not contain usable refinements.");
+  }
+
+  if (errors.length > 0) {
+    return { ok: false, errors, warnings };
+  }
+
+  return { ok: true, value: refinements, warnings };
 };
 
 const withTimeout = <T>(promise: Promise<T>, timeoutMs: number) =>
@@ -567,14 +592,22 @@ const smoothMilestonesWithLlm = async (
     }))
   };
   const result = await withTimeout(
-    llmProvider.generateJson({
+    generateValidatedJson({
+      task: "roadmapRefinement",
+      provider: llmProvider,
       systemPrompt:
         "You improve wording for a rule-generated learning roadmap. Do not add, remove, reorder, or reprioritize weeks. Do not change linkedSkills. Do not add resources. Return JSON with a milestones array. Each milestone must keep the same week number and may only rewrite focus, tasks, and notes for clarity. Keep each week focused on the provided linkedSkills and keep 2 to 4 tasks.",
-      userPrompt: JSON.stringify(payload)
+      userPrompt: JSON.stringify(payload),
+      repairPrompt: (errors) => `Repair the JSON roadmap refinements without changing week order or linkedSkills.
+Validation errors:
+${errors.map((error) => `- ${error}`).join("\n")}
+
+Return only corrected JSON with a milestones array.`,
+      validate: (value) => validateLlmRefinements(value, milestones)
     }),
     7000
   );
-  const refinements = validateLlmRefinements(result, milestones);
+  const refinements = result.value;
   const refinementByWeek = new Map(refinements.map((refinement) => [refinement.week, refinement]));
 
   return milestones.map((milestone) => {
@@ -602,19 +635,26 @@ export const generateRoadmap = async (
   const weeklyPlans = buildWeeklyPlans(orderedGaps, request.timelineWeeks);
   let milestones = toMilestones(weeklyPlans, request.targetRole, request.timelineWeeks);
   let refinedByLlm = false;
+  let fallbackUsed = false;
 
   if (options.llmProvider) {
     try {
       milestones = await smoothMilestonesWithLlm(milestones, request, options.llmProvider);
       refinedByLlm = true;
-    } catch {
+    } catch (error) {
+      console.debug("[ai-generation]", {
+        task: "roadmapRefinement",
+        provider: options.llmProvider.name ?? "unknown",
+        status: "fallback",
+        reason: error instanceof Error ? error.message : "Unknown refinement error."
+      });
       milestones = toMilestones(weeklyPlans, request.targetRole, request.timelineWeeks);
+      fallbackUsed = true;
     }
   }
 
   const jobDescriptionCount = request.jobDescriptionCount ?? 0;
-
-  return {
+  const output: RoadmapOutput = {
     timelineWeeks: request.timelineWeeks,
     goal: `Prepare for ${request.targetRole} roles with ${roadmapPacePhrase(
       request.timelineWeeks
@@ -640,8 +680,20 @@ export const generateRoadmap = async (
         ...(jobDescriptionCount > 0 ? ["jobDescriptions" as const] : []),
         "resume"
       ]
-    }
+    },
+    warnings: buildGenerationWarnings({
+      task: "roadmap",
+      jobDescriptionCount,
+      targetStack: request.targetStack,
+      gapCount: request.gapAnalysisItems.length,
+      refinedByLlm,
+      fallbackUsed
+    })
   };
+
+  assertRoadmapQuality(output);
+
+  return output;
 };
 
 export const isSupportedTimeline = (value: number) =>

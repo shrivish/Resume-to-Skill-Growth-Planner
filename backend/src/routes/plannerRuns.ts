@@ -17,6 +17,12 @@ import {
   listPlannerRuns,
   updatePlannerRunCompletion
 } from "../services/plannerRunRepository.js";
+import {
+  assertGapAnalysisQuality,
+  assertLearningResourceQuality,
+  assertProjectRecommendationQuality,
+  assertRoadmapQuality
+} from "../services/outputQualityValidation.js";
 
 const router = Router();
 
@@ -49,6 +55,17 @@ const validateCreateRequest = (body: unknown): CreatePlannerRunRequest => {
     !candidate.projectResult
   ) {
     throw new Error("planner outputs are required.");
+  }
+
+  assertGapAnalysisQuality(candidate.gapResult);
+  assertRoadmapQuality(candidate.roadmapResult);
+  assertProjectRecommendationQuality(
+    candidate.projectResult,
+    candidate.gapResult.items.slice(0, 5).map((item) => item.skillName)
+  );
+
+  if (candidate.learningResourceResult) {
+    assertLearningResourceQuality(candidate.learningResourceResult);
   }
 
   return {

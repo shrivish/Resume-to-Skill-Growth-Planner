@@ -1,7 +1,7 @@
 import type { LearningResource } from "./roadmap.js";
 import type { GapAnalysisItem } from "./gap-analysis.js";
 import type { RoadmapMilestone } from "./roadmap.js";
-import type { TimelineWeeks } from "./common.js";
+import type { ContractWarning, TimelineWeeks } from "./common.js";
 
 export type ProjectRecommendationType = "portfolio" | "proof-of-work";
 
@@ -25,6 +25,7 @@ export type ProjectRecommendation = {
 export type ProjectRecommendationOutput = {
   recommendations: ProjectRecommendation[];
   generatedFromNote: string;
+  warnings?: ContractWarning[];
 };
 
 export type ProjectRecommendationRequest = {

@@ -1,4 +1,4 @@
-import type { GenerationContext, SignalLabel, TimelineWeeks } from "./common.js";
+import type { ContractWarning, GenerationContext, SignalLabel, TimelineWeeks } from "./common.js";
 import type { GapAnalysisItem } from "./gap-analysis.js";
 
 export type LearningResource = {
@@ -24,6 +24,7 @@ export type RoadmapOutput = {
   signalStrength: SignalLabel;
   generatedFromNote: string;
   context: GenerationContext;
+  warnings?: ContractWarning[];
 };
 
 export type RoadmapRequest = {

@@ -1,5 +1,6 @@
 import type { ContractWarning, ParsedJobDescription, ParsedResume } from "@rsgp/shared";
 import type { LlmProvider } from "./llmProvider.js";
+import { generateValidatedJson } from "./aiGenerationService.js";
 import {
   validateParsedJobDescriptionOutput,
   validateParsedResumeOutput,
@@ -7,6 +8,7 @@ import {
 } from "./structuredOutputValidation.js";
 
 type CorrectableParse<T> = {
+  task: string;
   systemPrompt: string;
   prompt: string;
   correctivePrompt: (errors: string[]) => string;
@@ -105,6 +107,7 @@ export class StructuredLlmDocumentParser {
     text: string
   ): Promise<{ parsedResume: ParsedResume; warnings: ContractWarning[] }> {
     return this.parseWithCorrection({
+      task: "parseResume",
       systemPrompt: resumeSystemPrompt,
       prompt: `Parse this resume into ParsedResume JSON.
 
@@ -126,6 +129,7 @@ ${text}`,
     targetRole: string;
   }): Promise<{ parsedJobDescription: ParsedJobDescription; warnings: ContractWarning[] }> {
     return this.parseWithCorrection({
+      task: "parseJobDescription",
       systemPrompt: jdSystemPrompt,
       prompt: `Parse this job description into ParsedJobDescription JSON.
 Use id "${input.id}".
@@ -144,50 +148,24 @@ ${input.text}`,
   }
 
   private async parseWithCorrection<T>({
+    task,
     prompt,
     systemPrompt,
     correctivePrompt,
     validate
   }: CorrectableParse<T>): Promise<{ value: T; warnings: ContractWarning[] }> {
-    const firstOutput = await this.provider.generateJson({
+    const result = await generateValidatedJson({
+      task,
+      provider: this.provider,
       systemPrompt,
-      userPrompt: prompt
+      userPrompt: prompt,
+      repairPrompt: correctivePrompt,
+      validate
     });
-    const firstValidation = validate(firstOutput);
 
-    if (firstValidation.ok) {
-      return {
-        value: firstValidation.value,
-        warnings: firstValidation.warnings
-      };
-    }
-
-    const retryOutput = await this.provider.generateJson({
-      systemPrompt,
-      userPrompt: `${prompt}
-
-${correctivePrompt(firstValidation.errors)}`
-    });
-    const retryValidation = validate(retryOutput);
-
-    if (retryValidation.ok) {
-      return {
-        value: retryValidation.value,
-        warnings: [
-          ...firstValidation.warnings,
-          ...retryValidation.warnings,
-          {
-            code: "llm.corrective_retry_used",
-            message:
-              "The model output required one corrective retry before it matched the contract.",
-            severity: "info"
-          }
-        ]
-      };
-    }
-
-    throw new Error(
-      `LLM output failed schema validation after retry: ${retryValidation.errors.join("; ")}`
-    );
+    return {
+      value: result.value,
+      warnings: result.warnings
+    };
   }
 }

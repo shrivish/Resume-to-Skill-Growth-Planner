@@ -1,4 +1,4 @@
-import type { EvidenceSource, GapSeverity, SignalLabel } from "./common.js";
+import type { ContractWarning, EvidenceSource, GapSeverity, SignalLabel } from "./common.js";
 import type { PlanInputContext } from "./input-context.js";
 import type { ParsedJobDescription } from "./job-description.js";
 import type { SkillCategory } from "./resume.js";
@@ -26,6 +26,7 @@ export type GapAnalysisOutput = {
   summary: string;
   items: GapAnalysisItem[];
   generatedFromNote: string;
+  warnings?: ContractWarning[];
 };
 
 export type GapAnalysisRequest = {

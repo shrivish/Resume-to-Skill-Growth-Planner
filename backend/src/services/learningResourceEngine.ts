@@ -1,4 +1,5 @@
 import type {
+  ContractWarning,
   GapAnalysisItem,
   LearningResourceDepth,
   LearningResourceOutput,
@@ -11,7 +12,13 @@ import type {
   RoadmapMilestone,
   SkillLevel
 } from "@rsgp/shared";
+import { generateValidatedJson } from "./aiGenerationService.js";
 import type { LlmProvider } from "./llmProvider.js";
+import {
+  assertLearningResourceQuality,
+  buildGenerationWarnings
+} from "./outputQualityValidation.js";
+import type { ValidationResult } from "./structuredOutputValidation.js";
 
 type RoleFamily = "backend" | "frontend" | "fullstack" | "data" | "general";
 
@@ -768,15 +775,26 @@ const buildSkillRecommendation = (
 const validateLlmRefinements = (
   value: unknown,
   recommendations: LearningResourceSkillRecommendation[]
-): LlmResourceRefinement[] => {
+): ValidationResult<LlmResourceRefinement[]> => {
   if (!isRecord(value) || !Array.isArray(value.recommendations)) {
-    return [];
+    return {
+      ok: false,
+      errors: ["recommendations must be an array."],
+      warnings: []
+    };
   }
 
-  return value.recommendations.filter(isRecord).flatMap((skillItem): LlmResourceRefinement[] => {
+  const errors: string[] = [];
+  const warnings: ContractWarning[] = [];
+  const refinements = value.recommendations.filter(isRecord).flatMap((skillItem): LlmResourceRefinement[] => {
     const skillIndex = typeof skillItem.skillIndex === "number" ? skillItem.skillIndex : -1;
 
     if (!recommendations[skillIndex] || !Array.isArray(skillItem.resources)) {
+      warnings.push({
+        code: "llm_refinement.ignored_resource_skill_index",
+        message: `Ignored learning-resource refinement for unknown skill index ${skillIndex}.`,
+        severity: "info"
+      });
       return [];
     }
 
@@ -787,6 +805,11 @@ const validateLlmRefinements = (
           typeof resourceItem.resourceIndex === "number" ? resourceItem.resourceIndex : -1;
 
         if (!recommendations[skillIndex]?.resources[resourceIndex]) {
+          warnings.push({
+            code: "llm_refinement.ignored_resource_index",
+            message: `Ignored learning-resource refinement for unknown resource index ${resourceIndex}.`,
+            severity: "info"
+          });
           return undefined;
         }
 
@@ -810,6 +833,16 @@ const validateLlmRefinements = (
       })
       .filter((item): item is LlmResourceRefinement => Boolean(item));
   });
+
+  if (refinements.length === 0) {
+    errors.push("recommendations did not contain usable resource refinements.");
+  }
+
+  if (errors.length > 0) {
+    return { ok: false, errors, warnings };
+  }
+
+  return { ok: true, value: refinements, warnings };
 };
 
 const withTimeout = <T>(promise: Promise<T>, timeoutMs: number) =>
@@ -850,14 +883,22 @@ const refineResourcesWithLlm = async (
     }))
   };
   const result = await withTimeout(
-    llmProvider.generateJson({
+    generateValidatedJson({
+      task: "learningResourceRefinement",
+      provider: llmProvider,
       systemPrompt:
         "You refine wording for rule-selected learning resources. Do not add, remove, reorder, rename, relink, or replace skills or resources. Do not change ids, titles, URLs, types, providers, source families, depth, or skillSupported. Return JSON with recommendations array. Each skill item must keep skillIndex. Each resource may only rewrite whyRecommended, roadmapFit, and projectFit for clarity. Keep wording specific, practical, role-relevant, and honest about using official docs, curated courses, and curated GitHub references.",
-      userPrompt: JSON.stringify(payload)
+      userPrompt: JSON.stringify(payload),
+      repairPrompt: (errors) => `Repair the JSON learning-resource refinements without changing skillIndex, resourceIndex, resource identity, URLs, providers, source families, or depth.
+Validation errors:
+${errors.map((error) => `- ${error}`).join("\n")}
+
+Return only corrected JSON with a recommendations array.`,
+      validate: (value) => validateLlmRefinements(value, recommendations)
     }),
     7000
   );
-  const refinements = validateLlmRefinements(result, recommendations);
+  const refinements = result.value;
 
   return recommendations.map((skillRecommendation, skillIndex) => ({
     ...skillRecommendation,
@@ -889,15 +930,23 @@ export const recommendLearningResources = async (
     .map((gap) => buildSkillRecommendation(gap, request))
     .filter((item): item is LearningResourceSkillRecommendation => Boolean(item));
   let refinedByLlm = false;
+  let fallbackUsed = false;
 
   if (options.llmProvider) {
     try {
       recommendations = await refineResourcesWithLlm(recommendations, request, options.llmProvider);
       refinedByLlm = true;
-    } catch {
+    } catch (error) {
+      console.debug("[ai-generation]", {
+        task: "learningResourceRefinement",
+        provider: options.llmProvider.name ?? "unknown",
+        status: "fallback",
+        reason: error instanceof Error ? error.message : "Unknown refinement error."
+      });
       recommendations = selectedGaps
         .map((gap) => buildSkillRecommendation(gap, request))
         .filter((item): item is LearningResourceSkillRecommendation => Boolean(item));
+      fallbackUsed = true;
     }
   }
 
@@ -911,7 +960,7 @@ export const recommendLearningResources = async (
     )
   );
 
-  return {
+  const output: LearningResourceOutput = {
     recommendations,
     sourcePolicy:
       "Locked source policy: official docs, curated course list, and curated GitHub references only. No live web search, scraping, arbitrary crawling, or LLM-selected sources are used.",
@@ -924,6 +973,25 @@ export const recommendLearningResources = async (
         : ""
     }. Source selection was deterministic from the internal allowlist (${sourceFamilies.join(", ")})${
       refinedByLlm ? " with LLM wording refinement only" : ""
-    }.`
+    }.`,
+    warnings: [
+      ...buildGenerationWarnings({
+        task: "learningResources",
+        jobDescriptionCount: request.jobDescriptionCount,
+        targetStack: request.targetStack,
+        gapCount: request.gapAnalysisItems.length,
+        refinedByLlm,
+        fallbackUsed
+      }),
+      {
+        code: "resources.locked_source_policy",
+        message: "Resource suggestions were limited to trusted sources.",
+        severity: "info"
+      }
+    ]
   };
+
+  assertLearningResourceQuality(output);
+
+  return output;
 };

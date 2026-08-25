@@ -1,4 +1,5 @@
 import type {
+  ContractWarning,
   EvidenceSource,
   GapAnalysisItem,
   GapAnalysisOutput,
@@ -11,7 +12,13 @@ import type {
   SkillCategory,
   SkillLevel
 } from "@rsgp/shared";
+import { generateValidatedJson } from "./aiGenerationService.js";
 import type { LlmProvider } from "./llmProvider.js";
+import {
+  assertGapAnalysisQuality,
+  buildGenerationWarnings
+} from "./outputQualityValidation.js";
+import type { ValidationResult } from "./structuredOutputValidation.js";
 
 type TargetSkillSignal = {
   canonicalName: string;
@@ -704,17 +711,31 @@ const isSkillLevel = (value: unknown): value is SkillLevel =>
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
-const validateLlmRefinements = (value: unknown, allowedSkillNames: Set<string>) => {
+const validateLlmRefinements = (
+  value: unknown,
+  allowedSkillNames: Set<string>
+): ValidationResult<LlmGapRefinement[]> => {
   if (!isRecord(value) || !Array.isArray(value.refinements)) {
-    return [];
+    return {
+      ok: false,
+      errors: ["refinements must be an array."],
+      warnings: []
+    };
   }
 
-  return value.refinements
+  const errors: string[] = [];
+  const warnings: ContractWarning[] = [];
+  const refinements = value.refinements
     .filter(isRecord)
     .map((item): LlmGapRefinement | undefined => {
       const skillName = typeof item.skillName === "string" ? item.skillName.trim() : "";
 
       if (!allowedSkillNames.has(skillName)) {
+        warnings.push({
+          code: "llm_refinement.ignored_gap_skill",
+          message: `Ignored gap refinement for unknown skill "${skillName}".`,
+          severity: "info"
+        });
         return undefined;
       }
 
@@ -728,6 +749,16 @@ const validateLlmRefinements = (value: unknown, allowedSkillNames: Set<string>) 
       };
     })
     .filter((item): item is LlmGapRefinement => Boolean(item));
+
+  if (refinements.length === 0) {
+    errors.push("refinements did not contain usable gap refinements.");
+  }
+
+  if (errors.length > 0) {
+    return { ok: false, errors, warnings };
+  }
+
+  return { ok: true, value: refinements, warnings };
 };
 
 const withTimeout = <T>(promise: Promise<T>, timeoutMs: number) =>
@@ -766,17 +797,22 @@ const refineItemsWithLlm = async (
     }))
   };
   const result = await withTimeout(
-    llmProvider.generateJson({
+    generateValidatedJson({
+      task: "gapAnalysisRefinement",
+      provider: llmProvider,
       systemPrompt:
         "You refine a rule-generated skill gap analysis. You must not add, remove, rename, reorder, or invent gap items. Return JSON with a refinements array. Each refinement must use an existing skillName exactly and may only adjust currentLevel or reason using the provided evidence. Allowed levels: Not shown, Partial exposure, Working proficiency, Interview-ready, Production-ready.",
-      userPrompt: JSON.stringify(payload)
+      userPrompt: JSON.stringify(payload),
+      repairPrompt: (errors) => `Repair the JSON skill-gap refinements without adding, removing, renaming, or reordering gap items.
+Validation errors:
+${errors.map((error) => `- ${error}`).join("\n")}
+
+Return only corrected JSON with a refinements array.`,
+      validate: (value) => validateLlmRefinements(value, new Set(items.map((item) => item.skillName)))
     }),
     7000
   );
-  const refinements = validateLlmRefinements(
-    result,
-    new Set(items.map((item) => item.skillName))
-  );
+  const refinements = result.value;
   const bySkillName = new Map(refinements.map((item) => [item.skillName, item]));
 
   return items.map((item) => {
@@ -822,19 +858,27 @@ export const generateGapAnalysis = async (
   const ruleBasedItems = buildRuleBasedItems(input);
   let items = ruleBasedItems;
   let refinedByLlm = false;
+  let fallbackUsed = false;
 
   if (options.llmProvider) {
     try {
       items = await refineItemsWithLlm(ruleBasedItems, input, options.llmProvider);
       refinedByLlm = true;
-    } catch {
+    } catch (error) {
+      console.debug("[ai-generation]", {
+        task: "gapAnalysisRefinement",
+        provider: options.llmProvider.name ?? "unknown",
+        status: "fallback",
+        reason: error instanceof Error ? error.message : "Unknown refinement error."
+      });
       items = ruleBasedItems;
+      fallbackUsed = true;
     }
   }
 
   items = [...items].sort(compareGapItems);
 
-  return {
+  const output: GapAnalysisOutput = {
     summary:
       items.length === 0
         ? "No skill gaps were detected from the available target and resume signals."
@@ -842,8 +886,20 @@ export const generateGapAnalysis = async (
             input.targetRole
           }.`,
     items,
-    generatedFromNote: generatedFromNote(input, refinedByLlm)
+    generatedFromNote: generatedFromNote(input, refinedByLlm),
+    warnings: buildGenerationWarnings({
+      task: "gapAnalysis",
+      jobDescriptionCount: input.acceptedJobDescriptions.length,
+      targetStack: input.targetStack,
+      gapCount: items.length,
+      refinedByLlm,
+      fallbackUsed
+    })
   };
+
+  assertGapAnalysisQuality(output);
+
+  return output;
 };
 
 export const generateGapAnalysisFromContext = (

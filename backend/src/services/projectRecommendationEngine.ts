@@ -1,4 +1,5 @@
 import type {
+  ContractWarning,
   GapAnalysisItem,
   ProjectDifficulty,
   ProjectRecommendation,
@@ -8,7 +9,13 @@ import type {
   LearningResource,
   SkillCategory
 } from "@rsgp/shared";
+import { generateValidatedJson } from "./aiGenerationService.js";
 import type { LlmProvider } from "./llmProvider.js";
+import {
+  assertProjectRecommendationQuality,
+  buildGenerationWarnings
+} from "./outputQualityValidation.js";
+import type { ValidationResult } from "./structuredOutputValidation.js";
 
 type RoleFamily = "backend" | "frontend" | "fullstack" | "data" | "general";
 
@@ -777,17 +784,28 @@ const buildRuleBasedRecommendation = (
 const validateLlmRefinements = (
   value: unknown,
   recommendations: ProjectRecommendation[]
-): LlmProjectRefinement[] => {
+): ValidationResult<LlmProjectRefinement[]> => {
   if (!isRecord(value) || !Array.isArray(value.recommendations)) {
-    return [];
+    return {
+      ok: false,
+      errors: ["recommendations must be an array."],
+      warnings: []
+    };
   }
 
-  return value.recommendations
+  const errors: string[] = [];
+  const warnings: ContractWarning[] = [];
+  const refinements = value.recommendations
     .filter(isRecord)
     .map((item): LlmProjectRefinement | undefined => {
       const index = typeof item.index === "number" ? item.index : -1;
 
       if (!recommendations[index]) {
+        warnings.push({
+          code: "llm_refinement.ignored_project_index",
+          message: `Ignored project refinement for unknown index ${index}.`,
+          severity: "info"
+        });
         return undefined;
       }
 
@@ -816,6 +834,16 @@ const validateLlmRefinements = (
       };
     })
     .filter((item): item is LlmProjectRefinement => Boolean(item));
+
+  if (refinements.length === 0) {
+    errors.push("recommendations did not contain usable refinements.");
+  }
+
+  if (errors.length > 0) {
+    return { ok: false, errors, warnings };
+  }
+
+  return { ok: true, value: refinements, warnings };
 };
 
 const withTimeout = <T>(promise: Promise<T>, timeoutMs: number) =>
@@ -851,14 +879,22 @@ const refineRecommendationsWithLlm = async (
     }))
   };
   const result = await withTimeout(
-    llmProvider.generateJson({
+    generateValidatedJson({
+      task: "projectRefinement",
+      provider: llmProvider,
       systemPrompt:
         "You refine wording for rule-selected project recommendations. Do not add, remove, reorder, or replace recommendations. Do not change type, coveredSkills, difficulty, duration, buildSteps, scopeHints, starterIdeas, or resources. Return JSON with recommendations array. Each item must keep the same index and may only rewrite title, description, whyRecommended, and whatItProves for clarity. Keep wording specific, realistic for early-career candidates, and interview-proof oriented.",
-      userPrompt: JSON.stringify(payload)
+      userPrompt: JSON.stringify(payload),
+      repairPrompt: (errors) => `Repair the JSON project refinements without changing indexes or recommendation identity.
+Validation errors:
+${errors.map((error) => `- ${error}`).join("\n")}
+
+Return only corrected JSON with a recommendations array.`,
+      validate: (value) => validateLlmRefinements(value, recommendations)
     }),
     7000
   );
-  const refinements = validateLlmRefinements(result, recommendations);
+  const refinements = result.value;
   const refinementByIndex = new Map(refinements.map((refinement) => [refinement.index, refinement]));
 
   return recommendations.map((recommendation, index) => {
@@ -887,6 +923,7 @@ export const recommendProjects = async (
     buildRuleBasedRecommendation(candidate, request)
   );
   let refinedByLlm = false;
+  let fallbackUsed = false;
 
   if (options.llmProvider) {
     try {
@@ -896,14 +933,21 @@ export const recommendProjects = async (
         options.llmProvider
       );
       refinedByLlm = true;
-    } catch {
+    } catch (error) {
+      console.debug("[ai-generation]", {
+        task: "projectRefinement",
+        provider: options.llmProvider.name ?? "unknown",
+        status: "fallback",
+        reason: error instanceof Error ? error.message : "Unknown refinement error."
+      });
       recommendations = selectedCandidates.map((candidate) =>
         buildRuleBasedRecommendation(candidate, request)
       );
+      fallbackUsed = true;
     }
   }
 
-  return {
+  const output: ProjectRecommendationOutput = {
     recommendations,
     generatedFromNote: `Generated from target role, ${
       request.gapAnalysisItems.length
@@ -913,6 +957,21 @@ export const recommendProjects = async (
         : ""
     } using deterministic archetype scoring${
       refinedByLlm ? " with LLM wording refinement" : ""
-    }.`
+    }.`,
+    warnings: buildGenerationWarnings({
+      task: "projects",
+      jobDescriptionCount: request.jobDescriptionCount,
+      targetStack: request.targetStack,
+      gapCount: request.gapAnalysisItems.length,
+      refinedByLlm,
+      fallbackUsed
+    })
   };
+
+  assertProjectRecommendationQuality(
+    output,
+    request.gapAnalysisItems.slice(0, 5).map((item) => item.skillName)
+  );
+
+  return output;
 };
