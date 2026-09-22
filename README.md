@@ -11,6 +11,16 @@ It produces:
 
 Plans can be saved, revisited, and tracked as tasks are completed. The app uses a React/TypeScript frontend, an Express/TypeScript backend, PostgreSQL for persistence, and a configurable LLM provider such as Ollama or OpenAI.
 
+## Home page
+<img width="1469" height="769" alt="image" src="https://github.com/user-attachments/assets/99ea1f3a-46ee-4556-8a19-5ddcc89f9871" />
+
+
+## Create a new Growth Plan here
+<img width="1467" height="771" alt="image" src="https://github.com/user-attachments/assets/a1c9cbb0-3a86-4cfe-837c-cd1cf08337dc" />
+
+## Compiled all the plans in one place and track progress
+<img width="1468" height="779" alt="image" src="https://github.com/user-attachments/assets/47b2c149-3d7b-4614-89c8-0693ad807aad" />
+
 ## Prerequisites
 
 - Node.js `20.19.0` or newer
