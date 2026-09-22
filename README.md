@@ -1,6 +1,15 @@
 # Resume-to-Skill Growth Planner
 
-A project that takes your resume and provides a skill growth planner for your next interview.
+This project helps people prepare for their next role. Add a resume, target role, preferred stack, and optionally a few job descriptions. The app compares the candidate's current skills with the role requirements, then suggests what to learn and build next.
+
+It produces:
+
+- a skill-gap analysis;
+- an 8-, 12-, or 24-week learning roadmap;
+- portfolio project recommendations; and
+- learning resources connected to the roadmap.
+
+Plans can be saved, revisited, and tracked as tasks are completed. The app uses a React/TypeScript frontend, an Express/TypeScript backend, PostgreSQL for persistence, and a configurable LLM provider such as Ollama or OpenAI.
 
 ## Prerequisites
 
